@@ -1,0 +1,832 @@
+---
+title: "STATS701 Homework 4"
+author: "Jordan Farrer"
+date: '2016-12-04'
+output:
+  html_notebook:
+    code_folding: hide
+    css: style.css
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+
+```{r setup, include=FALSE}
+# Set options for the rmarkdown file
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = 'center', width = 100)
+```
+
+```{r setup2}
+# Set the seed for reproducibility
+set.seed(1)
+# Set the locale of the session so languages other than English can be used
+invisible(Sys.setlocale("LC_ALL", "en_US.UTF-8"))
+# Prevent printing in scientific notation
+options(digits = 4, width = 220)
+
+# Create a logger function
+logger <- function(msg, level = "info", file = log_file) {
+    cat(paste0("[", format(Sys.time(), "%Y-%m-%d %H:%M:%S.%OS"), "][", level, "] ", msg, "\n"), file = stdout())
+}
+
+# Set the project directory
+base_dir <- ''
+data_dir <- paste0(base_dir, "data/")
+code_dir <- paste0(base_dir, "code/")
+viz_dir <- paste0(base_dir, "viz/")
+
+dir.create(data_dir, showWarnings = FALSE)
+dir.create(code_dir, showWarnings = FALSE)
+dir.create(viz_dir, showWarnings = FALSE)
+```
+
+```{r Load Packages, include = FALSE}
+# Create a function that will be used to load/install packages
+fn_load_packages <- function(p) {
+  if (!is.element(p, installed.packages()[,1]) || (p =="DT" && !(packageVersion(p) > "0.1"))) {
+    if (p == "DT") {
+      devtools::install_github('rstudio/DT')
+    } else {
+      install.packages(p, dep = TRUE, repos = 'http://cran.us.r-project.org')
+    }
+  }
+  a <- suppressPackageStartupMessages(require(p, character.only = TRUE))
+  if (a) {
+    logger(paste0("Loaded package ", p, " version ", packageVersion(p)))
+  } else {
+    logger(paste0("Unable to load packages ", p))
+  }
+}
+# Create a vector of packages
+packages <- c('ggbiplot','tidyverse','ggthemes','knitr','extrafont','broom','tree','rpart',
+              'rattle','pander','tm','glmnet','tidytext','wordcloud2','RTextTools')
+# Use function to load the required packages
+invisible(lapply(packages, fn_load_packages))
+```
+
+```{r Import Fonts}
+# To the font second font, run the following two lines of code and add name of user to vector
+# system(paste0("cp -r ",viz_dir,"fonts/. ~/Library/Fonts/")) # instantaneous
+# font_import() # takes approximately 5-10 min
+users_v <- c("Jordan")
+```
+
+```{r Create palette and theme}
+# Create a color palette
+pal538 <- ggthemes_data$fivethirtyeight
+
+# Create a theme to use throughout the analysis
+theme_jrf <- function(base_size = 8, base_family = ifelse(Sys.info()[['user']] %in% users_v, "DecimaMonoPro", "Helvetica")) {
+    theme(
+        plot.background = element_rect(fill = "#F0F0F0", colour = "#606063"), 
+        panel.background = element_rect(fill = "#F0F0F0", colour = NA), 
+        panel.border = element_blank(),
+        panel.grid.major =   element_line(colour = "#D7D7D8"),
+        panel.grid.minor =   element_line(colour = "#D7D7D8", size = 0.25),
+        panel.margin =       unit(0.25, "lines"),
+        panel.margin.x =     NULL,
+        panel.margin.y =     NULL,
+        axis.ticks.x = element_blank(), 
+        axis.ticks.y = element_blank(),
+        axis.title = element_text(colour = "#A0A0A3"),
+        axis.text.x = element_text(vjust = 1, colour = '#3C3C3C',
+                                   family = ifelse(Sys.info()[['user']] %in% users_v,"DecimaMonoPro", "Helvetica")),
+        axis.text.y = element_text(hjust = 1, colour = '#3C3C3C',
+                                    family = ifelse(Sys.info()[['user']] %in% users_v,"DecimaMonoPro", "Helvetica")),
+        legend.background = element_blank(),
+        legend.key = element_blank(), 
+        plot.title = element_text(face = 'bold', colour = '#3C3C3C', hjust = 0),
+        text = element_text(size = 9, family = ifelse(Sys.info()[['user']] %in% users_v,"DecimaMonoPro", "Helvetica")),
+        title = element_text(family = ifelse(Sys.info()[['user']] %in% users_v,"DecimaMonoPro", "Helvetica"))
+        
+    )
+}
+```
+
+```{r fn_plot_cv_glmnet}
+fn_plot_cv_glmnet <- function(cv_glmnet, main) {
+
+    data <- 
+        tidy(cv_glmnet) %>% as_tibble() %>%
+        mutate(log_lambda = log(lambda)) 
+    
+    data2 <-
+        data %>%
+        filter(row_number() %% 4 == 0)
+    
+    data3 <-
+        data_frame(
+            log_lambda = c(log(cv_glmnet$lambda.min), log(cv_glmnet$lambda.1se))
+            , name = c("Min", "1se")
+        )
+    
+    ggplot() +
+        geom_errorbar(data = data, aes(x = log_lambda, ymin = conf.low, ymax = conf.high), 
+                      colour = pal538['dkgray'][[1]], alpha = 0.6) +
+        geom_point(data = data, aes(x = log_lambda, y = estimate), colour = pal538['red'][[1]]) +
+        geom_vline(xintercept = log(cv_glmnet$lambda.min), colour = pal538['dkgray'][[1]], alpha = 0.6) +
+        geom_vline(xintercept = log(cv_glmnet$lambda.1se), colour = pal538['dkgray'][[1]], alpha = 0.6) + 
+        theme_jrf() +
+        labs(title = main, x = expression(log(lambda)), y = cv_glmnet$name) +
+        geom_text(data = data2, aes(x = log_lambda, y = Inf, label = nzero), vjust = 1, colour = '#3C3C3C',
+                  family = ifelse(Sys.info()[['user']] %in% users_v,"DecimaMonoPro", "Helvetica"),
+                  size = 2.25) +
+        geom_label(data = data3, aes(x = log_lambda, y = Inf, label = name), vjust = 5, colour = '#3C3C3C',
+                   family = ifelse(Sys.info()[['user']] %in% users_v,"DecimaMonoPro", "Helvetica"))
+}   
+```
+
+# Problem 1
+
+## (1)
+
+```{r}
+set.seed(1)
+x.temp <- ceiling(runif(40, min=0, max=100))
+data1<- matrix(x.temp,ncol=2, byrow=TRUE )
+y <- round(rexp(nrow(data1), rate=2), 2)
+data1 <- data.frame(data1, y)
+names(data1)  <- c("X1", "X2", "Y1")
+
+data2 <- data1
+set.seed(1)
+data2$Y2 <- ifelse((data1$X1+data1$X2 > 70), rbinom(1,1,.62), rbinom(1,1, .31))
+data2 <- data2 %>% as_tibble()
+
+
+data2 <-
+    data2 %>%
+        mutate(region = ifelse(X1 >= 40 & X1 <= 75, "R1", 
+                               ifelse(X1 >= 75 & X2 <= 25, "R4", 
+                                      ifelse(X1 >= 75 & X2 >= 25, "R3", 
+                                             ifelse(X1 <= 40 & X2 >=75, "R2",
+                                                    ifelse(X1 <= 20, "R6", "R5"))))))
+
+
+        
+plot(data2$X1, data2$X2, xlim = c(0,100), ylim = c(0,100), xlab = "X1", ylab = "X2")
+title("data2")
+lines(x = c(40,40), y = c(0,100))
+lines(x = c(0,40), y = c(75,75))
+lines(x = c(75,75), y = c(0,100))
+lines(x = c(20,20), y = c(0,75))
+lines(x = c(75,100), y = c(25,25))
+
+text(x = (40+75)/2, y = 50, labels = c("R1\n0.4838"))
+text(x = 20, y = (100+75)/2, labels = c("R2\n0.5000"))
+text(x = (75+100)/2, y = (100+25)/2, labels = c("R3\n0.3825"))
+text(x = (75+100)/2, y = 25/2, labels = c("R4\n0.0700"))
+text(x = 30, y = 75/2, labels = c("R5\n0.4233"))
+text(x = 10, y = 75/2, labels = c("R6\n0.1000"))
+```
+
+## (2)
+
+- i) This is a top-down, recursive tree
+- ii) If x1 = 60 and x2 = 30, then we predict Y1 to be **`r data2 %>% filter(X1 >= 40 & X1 <= 75) %>% summarise(mean(Y1)) %>% unlist()`**.
+- iii) If x1 = 60 and x2 = 30, then we predict Y1 to be **`r data2 %>% filter(X1 >= 75 & X2 <= 25) %>% summarise(mean(Y1)) %>% unlist()`**.
+
+## (3)
+
+```{r}
+fit1 <- tree(Y1 ~ X1 + X2, data = data2)
+plot(fit1, main = "Hello")
+text(fit1)
+title("Regression Tree: Y1 ~ X1 + X2")
+```
+
+This tree is quite different in that it depends only on the variable X2. Empirically, we see that the predicted values do not closely match those in the diagram of data2 above.
+
+## (4)
+
+i)
+
+```{r}
+plot(data2$X1, data2$X2, xlim = c(0,100), ylim = c(0,100), xlab = "X1", ylab = "X2", pch = as.character(data2$Y2))
+title("data2")
+lines(x = c(40,40), y = c(0,100))
+lines(x = c(0,40), y = c(75,75))
+lines(x = c(75,75), y = c(0,100))
+lines(x = c(20,20), y = c(0,75))
+lines(x = c(75,100), y = c(25,25))
+
+text(x = (40+75)/2, y = 50, labels = c("R1"))
+text(x = 20, y = (100+75)/2, labels = c("R2"))
+text(x = (75+100)/2, y = (100+25)/2, labels = c("R3"))
+text(x = (75+100)/2, y = 25/2, labels = c("R4"))
+text(x = 30, y = 75/2, labels = c("R5"))
+text(x = 10, y = 75/2, labels = c("R6"))
+
+```
+
+ii) The predicted Prob(Y2 = 1) for x1 = 60, x2 = 30 is  **`r data2 %>% filter(X1 >= 40 & X1 <= 75) %>% summarise(sum(Y2 == 1) /  n()) %>% unlist()`**.
+iii) Y2's label for x1 = 60, x2 = 30 by majority vote is **`r data2 %>% filter(X1 >= 40 & X1 <= 75) %>% group_by(Y2) %>% count() %>% arrange(desc(n)) %>% filter(row_number() == 1) %>% select(Y2) %>% unlist()`**.
+
+## (5)
+
+```{r}
+fit2 <- rpart(factor(Y2) ~ X1 + X2, data = data2)
+fancyRpartPlot(fit2, main = "Classification Tree for data2", sub = "")
+```
+
+Yes, this tree is different from our original tree because it only depends on X1 whereas the original tree depended on X1 and X2.
+
+# Problem 2
+
+```{r results = 'asis'}
+yelp <- read_csv(paste0(data_dir, "yelp_subset.csv"), progress = FALSE)
+
+yelp %>%
+    select(votes.cool, votes.funny, votes.useful, stars, date, type) %>%
+    mutate(type = factor(type)) %>%
+    summary() %>%
+    pander(split.table = Inf)
+```
+
+
+```{r eval = FALSE}
+set.seed(1)
+n_words <- 20000
+yelp_sample <- sample_n(yelp, n_words)
+
+corp1 <- VCorpus(VectorSource(yelp_sample$text))
+corp2 <- tm_map(corp1, stripWhitespace)
+corp3 <- tm_map(corp2, removePunctuation)
+corp4 <- tm_map(corp3, content_transformer(tolower))
+corp5 <- tm_map(corp4, removeWords, stopwords("english"))
+corp6 <- tm_map(corp5, stemDocument, lazy = TRUE)
+
+dtm1 <- DocumentTermMatrix(corp6, control = list(bounds = list(global = c(n_words * 0.02,Inf))))
+
+saveRDS(yelp_sample, paste0(data_dir, "yelp_sample.RDS"))
+saveRDS(corp2, paste0(data_dir, "corp2.RDS"))
+saveRDS(dtm1, paste0(data_dir, "dtm1.RDS"))
+```
+
+## (1)
+
+```{r}
+yelp_sample <- readRDS(paste0(data_dir, "yelp_sample.RDS"))
+corp2 <- readRDS(paste0(data_dir, "corp2.RDS"))
+dtm1 <- readRDS(paste0(data_dir, "dtm1.RDS"))
+```
+
+
+### (i)
+
+The Document-Term Matrix is a data structure in which rows are the documents (Yelp review) and each column is a unique word (term after processing). Each cell represents frequency the term from the column appears in the document (row). Below is row 100 and column 405:
+
+```{r results = 'asis'}
+dtm1[100, 405] %>% as.matrix() %>%
+    pander()
+```
+
+The value (0) represents the number of times the term **seat** appears in the document 
+
+>`r corp2[[100]]$content`
+
+
+### (ii)
+
+The sparsity of the Document-Term Matrix is **94%** as shown by the output below. These means that of the  11,060,000 cells in the matrix, 10,393,625 or 94% are 0's.
+
+```{r}
+dtm1
+```
+
+
+## (2)
+
+```{r}
+yelp_sample2 <-
+    yelp_sample %>%
+    mutate(rating = factor(ifelse(stars >= 4,1, 0))) %>%
+    select(rating) %>%
+    bind_cols(
+        dtm1 %>% as.matrix() %>% as_tibble()
+    )
+
+yelp_sample2_train <- sample_n(yelp_sample2, 15000)
+yelp_sample2_test <- dplyr::setdiff(yelp_sample2, yelp_sample2_train)
+```
+
+## (3)
+
+```{r eval = FALSE}
+x_matrix <- model.matrix(rating ~ ., data = yelp_sample2_train)[, -1]
+y <- yelp_sample2_train %>% select(rating) %>% unlist()
+cv_glmnet <- cv.glmnet(x_matrix, y, family = 'binomial', alpha = 1, nfolds = 10)
+saveRDS(cv_glmnet, paste0(data_dir, "cv_glmnet.RDS"))
+```
+
+```{r}
+cv_glmnet <- readRDS(paste0(data_dir, "cv_glmnet.RDS"))
+fn_plot_cv_glmnet(cv_glmnet, "Lasso Model")
+```
+
+
+```{r}
+beta_lasso <- 
+    coef(cv_glmnet, s = "lambda.1se") %>% tidy() %>%
+    dplyr::rename(term = row) %>%
+    filter(term != "(Intercept)")
+```
+
+## (4)
+
+```{r results = 'asis'}
+lr_formula <- as.formula(paste0("rating ~ ", paste(beta_lasso$term, collapse = " + ")))
+lr_fit <- glm(lr_formula, data = yelp_sample2_train, family = "binomial")
+coefficients <- 
+    tidy(lr_fit) %>% 
+    as_tibble() %>%
+    filter(term != "(Intercept)")
+
+top_two_coefficients <- 
+    coefficients %>%
+    arrange(desc(estimate)) %>%
+    mutate(
+        odds = exp(estimate)
+        , prob = odds / (1 + odds)
+        , percentage = paste0(round(prob * 100, 2), "%")
+    ) %>%
+    head(2) 
+
+top_two_coefficients %>%
+    select(term, estimate, odds, prob, std.error, statistic, p.value) %>%
+    pander()
+```
+
+### (i)
+
+All else remaining constant, the two coefficients are the change in log odds of a rating of 4 or 5 stars (vs 1,2,3) for the additional appearance of the term **`r top_two_coefficients$term[1]`** or **`r top_two_coefficients$term[2]`**.
+
+In other words, all else remaining fixed,
+
++ Adding one additional appearence of the term **`r top_two_coefficients$term[1]`** to the Yelp review, increases the probability that the reviewer gave 4 or 5 stars by  **`r top_two_coefficients$percentage[1]`**.
++ Adding one additional appearence of the term **`r top_two_coefficients$term[2]`** to the Yelp review, increases the probability that the reviewer gave 4 or 5 stars by  **`r top_two_coefficients$percentage[2]`**.
+
+
+### (ii)
+
+```{r}
+positive_words <-
+    coefficients %>%
+        arrange(desc(estimate)) %>%
+        head(100) %>%
+        mutate(freq = round(estimate * 100, 0)) %>%
+        select(word = term, freq)
+
+wordcloud2(positive_words
+           , fontFamily = ifelse(Sys.info()[['user']] %in% users_v,"DecimaMonoPro", "Helvetica")
+           , color = pal538[['green']]
+           )
+```
+
+### (iii)
+
+```{r}
+negative_words <-
+    coefficients %>%
+        arrange(estimate) %>%
+        head(1000) %>%
+        mutate(freq = -1 * round(estimate * 100, 0)) %>%
+        select(word = term, freq)
+
+wordcloud2(negative_words
+           , fontFamily = ifelse(Sys.info()[['user']] %in% users_v,"DecimaMonoPro", "Helvetica")
+           , color = pal538[['red']]
+           )
+```
+
+### (iv)
+
+The two word clouds (positive and negative bag of words) contains terms we would expect. The terms positively correlated with 4-5 star reviews include the stems `r pander(positive_words$word[1:4])`. The terms negatively correlated with 4-5 star reviews include the stems `r pander(negative_words$word[1:4])`. Lastly, we build a word cloud in the shape of the Yelp logo that includes all terms appearing in at least 2% of the reviews by frequency of appearance.
+
+```{r eval = FALSE}
+word_freq <- 
+    tidytext::tidy(dtm1) %>% 
+    group_by(term) %>% 
+    dplyr::summarise(freq = sum(count)) %>%
+    select(word = term, freq)
+
+wordcloud2(word_freq, figPath = paste0(viz_dir, "yelp.png"), size = 1
+           , fontFamily = ifelse(Sys.info()[['user']] %in% users_v,"DecimaMonoPro", "Helvetica")
+           , color = "#D00B03"
+           )
+```
+
+```{r}
+knitr::include_graphics(paste0(viz_dir, "yelp_words.png"))
+```
+
+
+## (5)  
+
+```{r results = 'asis'}
+x_matrix_test <- model.matrix(rating ~ ., data = yelp_sample2_test)[, -1]
+
+testing_errors <- 
+    data_frame(
+        rating = yelp_sample2_test$rating
+        , predict_lasso = predict(cv_glmnet, x_matrix_test, s=c("lambda.1se"),  type = 'response')[, 1]
+        , predict_lr = predict(lr_fit, yelp_sample2_test, type = 'response')
+    
+    ) %>%
+    mutate(
+        predict2_lasso = ifelse(predict_lasso > .5, 1, 0)
+        , predict2_lr = ifelse(predict_lr > .5, 1, 0)
+        
+    ) %>%
+    summarise(
+        `Error Lasso` = sum(predict2_lasso != rating) / n()
+        , `Error Log Reg` = sum(predict2_lr != rating) / n()
+    )
+    
+testing_errors %>%
+    pander()
+```
+
+We see that the testing error for the LASSO model is smaller than the testing error of the logistic regression model. This is expected as the LASSO model contains more predictors.
+
+
+## (6) RTextTools
+
+### (i) Logistic Regression
+
+```{r eval = FALSE}
+yelp_sample2_combined <- bind_rows(yelp_sample2_train, yelp_sample2_test)
+rating <- yelp_sample2_combined %>% select(rating) %>% unlist()
+yelp_n <- nrow(yelp_sample2_train)
+
+container <- create_container(data2_combined %>% select(-rating), 
+                           labels = rating,
+                           trainSize = 1:yelp_n,
+                           testSize = (yelp_n+1):nrow(data2_combined)),
+                           virgin=FALSE)
+
+model_glmnet <- train_model(container, "GLMNET")
+glmnet_out <- classify_model(container, model_glmnet) # prediction
+glmnet_mce <- mean(rating[(yelp_n+1):nrow(data2_combined)] != glmnet_out[, 1])
+saveRDS(glmnet_mce, paste0(data_dir, "glmnet_mce.RDS"))
+```
+
+```{r}
+glmnet_mce <- readRDS(paste0(data_dir, "glmnet_mce.RDS"))
+```
+
+
+The testing error for logistic regression using RTextTools is **`r glmnet_mce`** which is larger than in (5) (ii). These two logistic models do not have the same predictors. In (5) (ii) we limited our predictors to those with non-zero coefficients in the LASSO model than 1se from the lambda that minimized the MSE. We can assume that the logistic regression model produced by RTextTools overfit the training dataset and thus has a lower testing error.
+
+### (ii) Random Forest
+
+```{r eval = FALSE}
+model_RF <- train_model(container, "RF")  
+RF_out <- classify_model(container, model_RF)
+RF_mce <- mean(rating[(yelp_n+1):nrow(data2_combined)] != RF_out[, 1])
+saveRDS(RF_mce, paste0(data_dir, "RF_mce.RDS"))
+```
+
+```{r}
+RF_mce <- readRDS(paste0(data_dir, "RF_mce.RDS"))
+```
+
+The testing error for the RTextTools Random Forest is **`r RF_mce`**.
+
+### (iii) SVM
+
+```{r eval = FALSE}
+model_SVM <- train_model(container, "SVM")   
+SVM_out <- classify_model(container, model_SVM)
+SVM_mce <- mean(rating[(yelp_n+1):nrow(data2_combined)] != SVM_out[, 1])
+saveRDS(SVM_mce, paste0(data_dir, "SVM_mce.RDS"))
+```
+
+```{r}
+SVM_mce <- readRDS(paste0(data_dir, "SVM_mce.RDS"))
+```
+
+The testing error for the RTextTools SVM is **`r SVM_mce`**.
+
+### (iv) Boosting
+
+```{r eval = FALSE}
+model_BOOSTING <- train_model(container, "BOOSTING") 
+BOOSTING_out <- classify_model(container, model_BOOSTING)
+BOOSTING_mce <- mean(rating[(yelp_n+1):nrow(data2_combined)] != BOOSTING_out[, 1])
+saveRDS(BOOSTING_mce, paste0(data_dir, "BOOSTING_mce.RDS"))
+```
+
+```{r}
+BOOSTING_mce <- readRDS(paste0(data_dir, "BOOSTING_mce.RDS"))
+```
+
+The testing error for the RTextTools Boosting is **`r BOOSTING_mce`**.
+
+We find that the random forest classifier has the least testing error. We are not surprised by this result as random forest classifiers are very good at not overfitting and incorporating a large number of predictors.
+
+```{r results = 'asis'}
+data_frame(
+    `Model` = c("Logistic Regression", "Random Forest", "SVM", "Boosting")
+    , `Testing MCE` = c(glmnet_mce, RF_mce, SVM_mce, BOOSTING_mce)
+) %>%
+    arrange(`Testing MCE`) %>%
+    pander()
+```
+
+## (7)
+
+If given a review, in order to predict its rating (4 and 5 vs 1, 2, or 3), we would need to perform the text clensing we did to our original Yelp dataset, including
+
+1. Removing whitespace
+2. Removing punctuation
+3. Converting all characters to lowercase
+4. Removing stopwords
+5. Stemming terms
+
+Then, we would need to find the frequency of each of the `r ncol(data2) - 1` terms used our model and then feed this input into our final Random Forest model.
+
+# Problem 3
+
+## (1)
+
+
+```{r}
+iq_data <- read_csv(paste0(data_dir, "IQ.full.csv"))
+set.seed(10)
+iq_sample <- sample_n(iq_data, 100)
+
+
+iq_sample_tests <-
+    iq_sample %>%
+    select(Science, Arith, Word, Parag, Numer, Coding, Auto, Math, Mechanic, Elec)
+
+test_names <- names(iq_sample_tests)
+
+pca_tests <- prcomp(iq_sample_tests, center = TRUE, scale. = TRUE)
+```
+
+### (a)
+
+Below are the PC1 and PC2 loadings for test variables:
+
+```{r results = 'asis'}
+pca_tests$rotation[, c(1,2)] %>% pander()
+```
+
+By definition, these loadings are unit vectors and we show that below:
+
+```{r results = 'asis'}
+pca_tests$rotation[, c(1,2)] %>%
+    as.data.frame() %>%
+    rownames_to_column("Variable") %>% 
+    as_tibble() %>%
+    mutate(
+        `PC1^2` = PC1^2
+        , `PC2^2` = PC2^2
+    ) %>%
+    bind_rows(
+        data_frame(
+            Variable = ""
+            , PC1 = NA
+            , PC2 = NA
+            , `PC1^2` = sum(.$`PC1^2`)
+            , `PC2^2` = sum(.$`PC2^2`)
+        )
+    ) %>%
+    select(Variable, PC1, `PC1^2`, PC2, `PC2^2`) %>%
+    pander(missing = "")
+```
+
+The correlation of PC1 and PC2 is **`r cor(pca_tests$rotation[, c(1)], pca_tests$rotation[, c(2)])`** which is nearly uncorrelated.
+
+### (b)
+
+The PCA1 score for each subject is obtained from the product of the PCA1 loadings ($\phi^1$'s) and the variable values from each subject. In our dataset, it looks like
+pc
+$$PC1 = \phi^1_{`r test_names[1]`}`r test_names[1]` +\phi^1_{`r test_names[2]`}`r test_names[2]` + \dotsm + \phi^1_{`r test_names[7]`}`r test_names[7]`$$  
+
+### (c)
+
+By definition, the principle compoent scores are uncorrelated. In practice we see that the correlation between PC1 and PC2 scores is **`r cor(pca_tests$x[,1], pca_tests$x[,2])`**.
+
+### (d)
+
+Below we plot the percent variance explained. We see that first principal componenet explains nearly **2/3** of all variance among the observations.
+
+```{r}
+data_frame(
+    variance_explained = (pca_tests$sdev)^2 / sum ((pca_tests$sdev)^2)
+) %>%
+    mutate(pc = 1:10) %>%
+    ggplot(aes(x = pc, y = variance_explained)) +
+    geom_bar(stat = 'identity', fill = pal538[['blue']]) +
+    labs(title = "Percent Variance Explained", y = "Variance Explained", x = "Principal Component") +
+    scale_y_continuous(labels = scales::percent) +
+    theme_jrf()
+```
+
+
+### (e)
+
+We see that nearly **77%** of variance in the data is explained by the first two principal components.
+
+
+```{r}
+data_frame(
+    variance_explained = (pca_tests$sdev)^2 / sum ((pca_tests$sdev)^2)
+) %>%
+    mutate(
+        cumsum = cumsum(variance_explained)
+        , pc = 1:10
+    ) %>%
+    ggplot(aes(x = pc, y = cumsum)) +
+    geom_line(colour = pal538[['blue']]) +
+    geom_point(colour = pal538[['blue']]) +
+    labs(title = "Percent Variance Explained", y = "Variance Explained", x = "Principal Component") +
+    scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+    theme_jrf()
+```
+
+### (f)
+
+In the biplot below, we see that the length of each vector is nearly the same and that the vectors all points in the same direction on the PC1 axis. The differences are seen on the PC2 axis. In one direction, there is the auto, mechanic, electric, and science test and in the other direction is the numerical and coding, numerical, paragraph, and writing test (with arithmetic in neither). 
+
+```{r}
+ggbiplot(pca_tests, obs.scale = 1, var.scale = 1) + 
+    theme_jrf() +
+    labs(title = "Biplot of PC1 and PC2")
+```
+
+### (g)
+
+We then color the biplot by gender. We see a strong systematic separation between male and female in the biplot with more female observations on the negative direction of PC2 and more male observations on the positive direction of PC2. We can interpret this as males performing better on auto, mechanic, electric, and science test than females in 1981, who performed better on coding, numerical, paragraph, and writing tests.
+
+```{r}
+ggbiplot(pca_tests, groups = factor(iq_sample$Gender), obs.scale = 1, var.scale = 1) + 
+    theme_jrf() +
+    labs(title = "Biplot of PC1 and PC2 by Gender") +
+    scale_colour_manual("Gender", values = c("male" = pal538[['blue']], "female" = pal538[['red']]))
+```
+
+## (2)
+
+
+### (a)
+
+```{r}
+iq_sample_esteem <-
+    iq_sample %>%
+    select(starts_with("Esteem")) %>%
+    mutate(
+        Esteem1 = 5 - Esteem1
+        , Esteem2 = 5 - Esteem2
+        , Esteem4 = 5 - Esteem4
+        , Esteem6 = 5 - Esteem6
+        , Esteem7 = 5 - Esteem7
+    )
+    
+
+test_esteem <- names(iq_sample_esteem)
+
+pca_esteem <- prcomp(iq_sample_esteem, center = TRUE, scale. = TRUE)
+```
+
+### (b)
+
+Below are the PC1 loadings
+
+```{r results = 'asis'}
+pca_esteem$rotation[, c(1,2)] %>%
+    as.data.frame() %>%
+    rownames_to_column("Variable") %>% 
+    as_tibble() %>%
+    select(Variable, PC1) %>%
+    pander()
+```
+
+### (c)
+
+We see that **`r round(100 * ((pca_esteem$sdev)^2 / sum ((pca_esteem$sdev)^2))[1],2)`%** of variance is explained by PC1. 
+
+```{r}
+data_frame(
+    variance_explained = (pca_esteem$sdev)^2 / sum ((pca_esteem$sdev)^2)
+) %>%
+    mutate(pc = 1:10) %>%
+    ggplot(aes(x = pc, y = variance_explained)) +
+    geom_bar(stat = 'identity', fill = pal538[['blue']]) +
+    labs(title = "Percent Variance Explained", y = "Variance Explained", x = "Principal Component") +
+    scale_y_continuous(labels = scales::percent) +
+    theme_jrf()
+```
+
+```{r}
+data_frame(
+    variance_explained = (pca_esteem$sdev)^2 / sum ((pca_esteem$sdev)^2)
+) %>%
+    mutate(
+        cumsum = cumsum(variance_explained)
+        , pc = 1:10
+    ) %>%
+    ggplot(aes(x = pc, y = cumsum)) +
+    geom_line(colour = pal538[['blue']]) +
+    geom_point(colour = pal538[['blue']]) +
+    labs(title = "Percent Variance Explained", y = "Variance Explained", x = "Principal Component") +
+    scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+    theme_jrf()
+```
+
+### (d)
+
+From the charts in (c) we recognize that the first PC explains nearly 50% of the variance in the data. From the biplot below we see that all esteem questions point in the same direction on the PC1 axis. There are differences in the length of the vectors, with the question "I am satisfied with myself being the shortest". We also see that questions 1, 2, and 4 are bunched together: these are questions about positive features of oneself. We see that question 9 pointing in the opposite direction and deals with "feeling useless". The other vectors that point in this direction on the PC2 axis all deal with negative feature or components of oneself.
+
+```{r}
+ggbiplot(pca_esteem, obs.scale = 1, var.scale = 1) + 
+    theme_jrf() +
+    labs(title = "Biplot of PC1 and PC2")
+```
+
+## (3)
+
+### (a)
+
+It important to create a logarithmic transformation of income because the variable is strongly positively skewed. 
+
+```{r}
+iq_sample %>%
+    ggplot(aes(x = Income2005)) +
+    geom_histogram(bins = 50, fill = pal538[['blue']]) +
+    labs(title = "Histogram of Income (2005)", x = "Income (2005)", y = "Observations") +
+    scale_x_continuous(labels = scales::dollar) + 
+    theme_jrf()
+```
+
+### (b)
+
+We resuse the results from (1): `pca_tests`.
+
+### (c)
+
+```{r}
+iq_sample_income <- 
+    iq_sample %>%
+        bind_cols(
+            pca_tests$x[, c(1,2,3)] %>%
+                as.data.frame() %>%
+                as_tibble()
+        ) %>%
+        mutate(income = log(Income2005))
+
+fit1 <- lm(income ~ PC1, data = iq_sample_income)
+fit2 <- lm(income ~ PC1+PC2+PC3, data = iq_sample_income)
+```
+
+
+```{r results = 'asis'}
+tidy(fit1) %>% pander(caption = "income ~ PC1")
+```
+
+
+```{r results = 'asis'}
+tidy(fit2) %>% pander(caption = "income ~ PC1 + PC2 + PC3")
+```
+
+We see that the LS estimates of PC1 in both fit1 and fit2 are identical. This is due to the fact that the PC's are uncorrelated variables. Below is the correlation matrix of the 3 PC's:
+
+```{r results = 'asis'}
+cor(pca_tests$x[, c(1,2,3)]) %>% pander()
+```
+
+We see from the table above that PC1 and PC2 are significant in predicting income, but PC3 is not. Additionally, based on the percent variance explained charts in (1), we see an elbow after the second PC and would thus prefer a model with only two PCs.
+
+### (d)
+
+Controlling for personal demographic variables and household environment, we find that the leading two PC’s of ASVAB are significant variables to predict income at .01 level.
+
+```{r results = 'asis'}
+fit3 <- lm(income ~ PC1+PC2, data = iq_sample_income)
+tidy(fit3) %>% pander(caption = "income ~ PC1 + PC2")
+```
+
+Our model to predict income is:
+
+$$Income = `r tidy(fit3)[1, 2]` + 
+`r tidy(fit3)[2, 2]``r tidy(fit3)[2, 1]` +
+`r tidy(fit3)[3, 2]``r tidy(fit3)[3, 1]`$$
+
+The two principal components are from the ASVAB (Armed Services Vocational Aptitude Battery) test scores, which includes tests in
+
++ Science, 
++ Arithmetic reasoning
++ Word knowledge
++ Paragraph comprehension
++ Numerical operation
++ Coding speed
++ Automative and Shop information
++ Math knowledge 
++ Mechanic Comprehension
++ Electronic information
+
